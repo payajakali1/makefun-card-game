@@ -1,144 +1,122 @@
-// main.js — wires the table together: screens, clicks, the rival's turn,
-// floating combat numbers, and the deterministic screenshot states the
-// maker captures with ?shot=title|table|victory|defeat&seed=N.
+// main.js — the table's hands and ears. It owns the DOM, the human's
+// clicks and keys, the clock that lets Vesper's turn play out step by
+// step, and the game's demo states (?shot=title|table|victory|defeat,
+// ?seed=N) that its screenshots are taken from: every one of them is a
+// real game dealt and played by the engine and the rival's own rules.
 
 import { CARDS } from './cards.js';
 import {
-  createDuel, playCard, attack, endTurn, playableCards, isKindled,
-  trickTargetKind, guardChampions, canAttack, findChampion, other,
+  newDuel, startTurn, endTurn, playCard, attack, canAttack,
+  cardPlayInfo, attackTargets, championByUid, otherSide,
 } from './duel.js';
-import { nextRivalAction } from './ai.js';
-import { renderTable, spawnFloater, centerOf } from './render.js';
-import { sfx } from './sound.js';
+import { nextAction } from './ai.js';
+import { render, eventText, spawnFloater } from './render.js';
+import { sfx, setMuted, isMuted } from './sound.js';
 
 const $ = (id) => document.getElementById(id);
 const refs = {
-  rivalBar: $('rival-bar'),
-  playerBar: $('player-info'),
-  rivalHand: $('rival-hand'),
-  rivalBoard: $('rival-board'),
-  playerBoard: $('player-board'),
-  playerHand: $('player-hand'),
-  log: $('log'),
-  turnBanner: $('turn-banner'),
-  endTurnBtn: $('end-turn-btn'),
+  rivalHeart: $('rivalHeart'), rivalMeta: $('rivalMeta'), rivalHand: $('rivalHand'),
+  rivalBoard: $('rivalBoard'), playerBoard: $('playerBoard'), playerHand: $('playerHand'),
+  playerHeart: $('playerHeart'), playerMeta: $('playerMeta'),
+  endTurn: $('endTurn'), turnBanner: $('turnBanner'),
 };
-const fxLayer = $('fx-layer');
+const logEl = $('log');
+const floaterLayer = $('floaterLayer');
 const params = new URLSearchParams(location.search);
+const baseSeed = Number(params.get('seed')) || 7;
 
 let state = null;
-const ui = {
-  busy: false,
-  selectedHand: null,
-  selectedAttacker: null,
-  playable: [],
-  kindledHand: new Set(),
-  targetable: new Set(),
-};
+let busy = false;
+const ui = { selectedHand: null, selectedAttacker: null, legalTargets: [], playInfo: new Map() };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function showScreen(name) {
-  $('title-screen').hidden = name !== 'title';
-  $('table-screen').hidden = name !== 'table';
-  $('end-screen').hidden = name !== 'end';
+// ——— log, sound, floaters ———
+function announce(events, namesByUid) {
+  for (const ev of events) {
+    if (ev.type === 'attack' && namesByUid[ev.uid]) ev.cardId = namesByUid[ev.uid];
+    const line = eventText(state, ev);
+    if (line) {
+      const li = document.createElement('li');
+      li.textContent = line;
+      logEl.prepend(li);
+      while (logEl.children.length > 5) logEl.lastChild.remove();
+    }
+    if (ev.type === 'play') { sfx.play(); if (ev.kindled) sfx.kindle(); }
+    if (ev.type === 'attack') sfx.attack();
+    if (ev.type === 'death') sfx.death();
+    if (ev.type === 'heal') sfx.heal();
+    if (ev.type === 'fatigue') sfx.hurt();
+  }
 }
 
-function currentTargets() {
-  const set = new Set();
-  if (!state || state.winner) return set;
-  if (ui.selectedHand != null) {
-    const def = CARDS[state.sides.player.hand[ui.selectedHand]];
-    const need = trickTargetKind(def);
-    if (need === 'anyTarget' || need === 'anyChampion') {
-      for (const who of ['player', 'rival']) {
-        for (const ch of state.sides[who].board) set.add(`${who}:${ch.uid}`);
-      }
-      if (need === 'anyTarget') { set.add('player:heart'); set.add('rival:heart'); }
-    } else if (need === 'friendlyChampion') {
-      for (const ch of state.sides.player.board) set.add(`player:${ch.uid}`);
-    } else if (need === 'enemyChampion') {
-      for (const ch of state.sides.rival.board) set.add(`rival:${ch.uid}`);
+function floaters(events) {
+  for (const ev of events) {
+    if (ev.type === 'championHurt') {
+      const anchor = document.querySelector(`.board .card[data-uid="${ev.uid}"]`);
+      spawnFloater(floaterLayer, anchor, `-${ev.amount}`, '');
+      if (anchor) { anchor.classList.add('shaken'); setTimeout(() => anchor.classList.remove('shaken'), 320); }
     }
-  } else if (ui.selectedAttacker != null) {
-    const guards = guardChampions(state, 'rival');
-    if (guards.length > 0) {
-      for (const ch of guards) set.add(`rival:${ch.uid}`);
-    } else {
-      for (const ch of state.sides.rival.board) set.add(`rival:${ch.uid}`);
-      set.add('rival:heart');
+    if (ev.type === 'heartHurt') {
+      spawnFloater(floaterLayer, ev.side === 'player' ? refs.playerHeart : refs.rivalHeart, `-${ev.amount} ♥`, '');
+      sfx.hurt();
+    }
+    if (ev.type === 'heal') {
+      spawnFloater(floaterLayer, ev.side === 'player' ? refs.playerHeart : refs.rivalHeart, `+${ev.amount} ♥`, 'good');
+    }
+    if (ev.type === 'play' && ev.kindled) {
+      spawnFloater(floaterLayer, refs.turnBanner, '🔥 KINDLED', 'gold');
     }
   }
-  return set;
 }
 
-function refreshUi() {
-  const myTurn = state && state.active === 'player' && !state.winner && !ui.busy;
-  ui.playable = myTurn ? playableCards(state, 'player') : [];
-  ui.kindledHand = new Set(
-    state
-      ? state.sides.player.hand
-          .map((cardId, i) => (isKindled(state, 'player', CARDS[cardId]) ? i : -1))
-          .filter((i) => i >= 0)
-      : [],
-  );
-  ui.targetable = currentTargets();
-}
-
-function render() {
-  refreshUi();
-  renderTable(refs, state, ui);
-}
-
-function snapshotPositions() {
-  const map = new Map();
-  document.querySelectorAll('[data-uid]').forEach((node) => {
-    map.set(node.dataset.uid, centerOf(node));
-  });
-  document.querySelectorAll('.portrait').forEach((node) => {
-    map.set(`${node.dataset.owner}:heart`, centerOf(node));
-  });
+function namesSnapshot() {
+  const map = {};
+  for (const sideKey of ['player', 'rival']) {
+    for (const champ of state.sides[sideKey].board) map[champ.uid] = champ.id;
+  }
   return map;
 }
 
-// Play the engine's fx notes as floaters and shakes, using the positions
-// captured just before the action changed the table.
-function playFx(before) {
-  const fx = state.fx.splice(0, state.fx.length);
-  for (const note of fx) {
-    if (note.type === 'damage' || note.type === 'death') {
-      const pos = before.get(String(note.uid));
-      const node = document.querySelector(`[data-uid="${note.uid}"]`);
-      if (node) node.classList.add('hit');
-      if (pos) {
-        spawnFloater(fxLayer, pos.x, pos.y, note.type === 'death' ? 'FELL' : `-${note.amount}`, note.type === 'death' ? 'info' : 'damage');
-      }
-      if (note.type === 'death') sfx.death();
-      else sfx.hit();
-    } else if (note.type === 'heartDamage') {
-      const pos = before.get(`${note.owner}:heart`);
-      if (pos) spawnFloater(fxLayer, pos.x, pos.y - 10, `-${note.amount}`, 'heart');
-      sfx.hit();
-    } else if (note.type === 'heal') {
-      const pos = before.get(`${note.owner}:heart`);
-      if (pos) spawnFloater(fxLayer, pos.x, pos.y - 10, `+${note.amount}`, 'heal');
-      sfx.heal();
-    } else if (note.type === 'freeze') {
-      const node = document.querySelector(`[data-uid="${note.uid}"]`);
-      if (node) { const p = centerOf(node); spawnFloater(fxLayer, p.x, p.y, 'FROZEN', 'info'); }
-    } else if (note.type === 'buff') {
-      const node = document.querySelector(`[data-uid="${note.uid}"]`);
-      if (node) { const p = centerOf(node); spawnFloater(fxLayer, p.x, p.y, 'BUFFED', 'info'); }
-    } else if (note.type === 'summon' && note.kindled) {
-      sfx.kindle();
-    }
+// ——— rendering with the human's selection ———
+function targetsFor(info) {
+  if (!info || !info.targetMode) return [];
+  const foeKey = otherSide('player');
+  if (info.targetMode === 'anything') {
+    return [
+      { kind: 'heart', side: 'rival' }, { kind: 'heart', side: 'player' },
+      ...state.sides.rival.board.map((c) => ({ kind: 'champion', side: 'rival', uid: c.uid })),
+      ...state.sides.player.board.map((c) => ({ kind: 'champion', side: 'player', uid: c.uid })),
+    ];
   }
+  if (info.targetMode === 'enemyChamp') {
+    return state.sides[foeKey].board.map((c) => ({ kind: 'champion', side: foeKey, uid: c.uid }));
+  }
+  return state.sides.player.board.map((c) => ({ kind: 'champion', side: 'player', uid: c.uid }));
 }
 
-function afterAction(before) {
-  render();
-  playFx(before);
-  if (state.winner) setTimeout(showEnd, 900);
+function refresh() {
+  ui.playInfo = new Map();
+  if (state.active === 'player' && !state.winner) {
+    state.sides.player.hand.forEach((_, i) => {
+      const info = cardPlayInfo(state, 'player', i);
+      if (info) ui.playInfo.set(i, info);
+    });
+  }
+  ui.legalTargets = [];
+  if (ui.selectedHand !== null && ui.playInfo.get(ui.selectedHand)) {
+    ui.legalTargets = targetsFor(ui.playInfo.get(ui.selectedHand));
+  } else if (ui.selectedAttacker !== null) {
+    ui.legalTargets = attackTargets(state, 'player', ui.selectedAttacker);
+  }
+  render(state, refs, { ...ui, busy });
+  if (state.active === 'player' && !busy && !state.winner) {
+    for (const champ of state.sides.player.board) {
+      if (canAttack(state, 'player', champ.uid)) {
+        const el = refs.playerBoard.querySelector(`[data-uid="${champ.uid}"]`);
+        if (el) el.classList.add('can-attack');
+      }
+    }
+  }
 }
 
 function clearSelection() {
@@ -146,305 +124,248 @@ function clearSelection() {
   ui.selectedAttacker = null;
 }
 
-function doPlay(handIndex, target) {
-  const before = snapshotPositions();
-  const def = CARDS[state.sides.player.hand[handIndex]];
-  const ok = playCard(state, 'player', handIndex, target);
-  if (ok) {
-    sfx.play();
+// ——— applying actions ———
+function applyPlay(sideKey, handIndex, target) {
+  const names = namesSnapshot();
+  const result = playCard(state, sideKey, handIndex, target);
+  if (!result.ok) return false;
+  refresh();
+  announce(result.events, names);
+  floaters(result.events);
+  return true;
+}
+
+async function applyAttack(sideKey, uid, target) {
+  const names = namesSnapshot();
+  const anchor = document.querySelector(`.board .card[data-uid="${uid}"]`);
+  if (anchor) anchor.classList.add('lunging');
+  await sleep(300);
+  const result = attack(state, sideKey, uid, target);
+  if (!result.ok) { refresh(); return false; }
+  refresh();
+  announce(result.events, names);
+  floaters(result.events);
+  return true;
+}
+
+function checkEnd() {
+  if (!state.winner) return false;
+  const won = state.winner === 'player';
+  const end = $('endScreen');
+  end.classList.remove('hidden', 'victory', 'defeat');
+  end.classList.add(state.winner === 'draw' ? 'defeat' : won ? 'victory' : 'defeat');
+  $('endTitle').textContent = state.winner === 'draw' ? 'A DRAW' : won ? 'VICTORY' : 'DEFEAT';
+  $('endText').textContent = state.winner === 'draw'
+    ? 'Both Hearts guttered out together. The ember keeps neither of you.'
+    : won
+      ? 'Vesper bows, and the last ember of Emberfall settles in your palm.'
+      : 'The Gloom Herald takes the ember. The table goes dark — this time.';
+  $('endStats').textContent =
+    `Rounds: ${state.round} · Champions you felled: ${state.felled.player} · Champions you lost: ${state.felled.rival} · ` +
+    `Your Heart: ${Math.max(0, state.sides.player.heart)} · Vesper's Heart: ${Math.max(0, state.sides.rival.heart)}`;
+  if (won) sfx.win(); else sfx.lose();
+  return true;
+}
+
+// ——— the human's turn ———
+function onHandClick(index) {
+  if (busy || state.active !== 'player' || state.winner) return;
+  const info = ui.playInfo.get(index);
+  if (!info) { clearSelection(); refresh(); return; }
+  sfx.click();
+  if (!info.targetMode) {
     clearSelection();
-    afterAction(before);
-  }
-  return ok;
-}
-
-async function doAttack(who, uid, target) {
-  const attackerNode = document.querySelector(`[data-uid="${uid}"]`);
-  let targetNode = null;
-  if (target.heart) {
-    targetNode = document.querySelector(`.portrait.${target.owner}`);
-  } else {
-    targetNode = document.querySelector(`[data-uid="${target.uid}"]`);
-  }
-  if (attackerNode && targetNode) {
-    const a = centerOf(attackerNode);
-    const t = centerOf(targetNode);
-    attackerNode.style.setProperty('--dx', `${(t.x - a.x) * 0.55}px`);
-    attackerNode.style.setProperty('--dy', `${(t.y - a.y) * 0.55}px`);
-    attackerNode.classList.add('lunging');
-    sfx.attack();
-    await wait(210);
-    attackerNode.classList.remove('lunging');
-  }
-  const before = snapshotPositions();
-  attack(state, who, uid, target);
-  afterAction(before);
-}
-
-// ————— Player input —————
-
-refs.playerHand.addEventListener('click', (ev) => {
-  if (!state || ui.busy || state.active !== 'player' || state.winner) return;
-  const node = ev.target.closest('.card');
-  if (!node) return;
-  const index = Number(node.dataset.handIndex);
-  if (!ui.playable.includes(index)) { sfx.select(); return; }
-  const def = CARDS[state.sides.player.hand[index]];
-  const need = trickTargetKind(def);
-  if (def.kind === 'trick' && need) {
-    ui.selectedAttacker = null;
-    ui.selectedHand = ui.selectedHand === index ? null : index;
-    sfx.select();
-    render();
-  } else {
-    doPlay(index, null);
-  }
-});
-
-refs.playerBoard.addEventListener('click', (ev) => {
-  if (!state || ui.busy || state.active !== 'player' || state.winner) return;
-  const node = ev.target.closest('.card');
-  if (!node) return;
-  const uid = Number(node.dataset.uid);
-  // A selected friendly-target trick (Overgrowth) lands here.
-  if (ui.selectedHand != null && ui.targetable.has(`player:${uid}`)) {
-    doPlay(ui.selectedHand, { owner: 'player', uid });
+    applyPlay('player', index, null);
+    checkEnd();
     return;
   }
-  const ch = findChampion(state, 'player', uid);
-  if (ch && canAttack(state, 'player', ch)) {
-    ui.selectedHand = null;
-    ui.selectedAttacker = ui.selectedAttacker === uid ? null : uid;
-    sfx.select();
-    render();
-  }
-});
+  ui.selectedHand = ui.selectedHand === index ? null : index;
+  ui.selectedAttacker = null;
+  refresh();
+}
 
-function enemyClicked(target) {
-  if (!state || ui.busy || state.active !== 'player' || state.winner) return;
-  if (ui.selectedHand != null) {
-    const key = target.heart ? 'rival:heart' : `rival:${target.uid}`;
-    if (ui.targetable.has(key)) doPlay(ui.selectedHand, target);
-  } else if (ui.selectedAttacker != null) {
-    const key = target.heart ? 'rival:heart' : `rival:${target.uid}`;
-    if (ui.targetable.has(key)) {
-      const uid = ui.selectedAttacker;
-      ui.selectedAttacker = null;
-      ui.busy = true;
-      doAttack('player', uid, target).then(() => { ui.busy = false; render(); });
-    }
+function onBoardClick(sideKey, uid) {
+  if (busy || state.active !== 'player' || state.winner) return;
+  // A chosen card looking for its target?
+  if (ui.selectedHand !== null) {
+    const hit = ui.legalTargets.find((t) => t.kind === 'champion' && t.side === sideKey && t.uid === uid);
+    if (hit) {
+      const index = ui.selectedHand;
+      clearSelection();
+      applyPlay('player', index, hit);
+      checkEnd();
+    } else { clearSelection(); refresh(); }
+    return;
+  }
+  // A chosen attacker looking for its target?
+  if (ui.selectedAttacker !== null) {
+    const hit = ui.legalTargets.find((t) => t.kind === 'champion' && t.side === sideKey && t.uid === uid);
+    if (hit) {
+      const attackerUid = ui.selectedAttacker;
+      clearSelection();
+      applyAttack('player', attackerUid, hit).then(() => checkEnd());
+    } else { clearSelection(); refresh(); }
+    return;
+  }
+  // Choosing an attacker.
+  if (sideKey === 'player' && canAttack(state, 'player', uid)) {
+    ui.selectedAttacker = uid;
+    sfx.click();
+    refresh();
   }
 }
 
-refs.rivalBoard.addEventListener('click', (ev) => {
-  const node = ev.target.closest('.card');
-  if (node) enemyClicked({ owner: 'rival', uid: Number(node.dataset.uid) });
-});
-refs.rivalBar.addEventListener('click', (ev) => {
-  if (ev.target.closest('.portrait')) enemyClicked({ owner: 'rival', heart: true });
-});
-$('table-screen').addEventListener('click', (ev) => {
-  if (ev.target === $('table-screen')) { clearSelection(); render(); }
-});
+function onHeartClick(sideKey) {
+  if (busy || state.active !== 'player' || state.winner) return;
+  const pending = ui.selectedHand !== null
+    ? { from: 'hand', target: ui.legalTargets.find((t) => t.kind === 'heart' && t.side === sideKey) }
+    : ui.selectedAttacker !== null
+      ? { from: 'board', target: ui.legalTargets.find((t) => t.kind === 'heart' && t.side === sideKey) }
+      : { from: null, target: null };
+  if (!pending.target) return;
+  if (pending.from === 'hand') {
+    const index = ui.selectedHand;
+    clearSelection();
+    applyPlay('player', index, pending.target);
+    checkEnd();
+  } else {
+    const attackerUid = ui.selectedAttacker;
+    clearSelection();
+    applyAttack('player', attackerUid, pending.target).then(() => checkEnd());
+  }
+}
 
-refs.endTurnBtn.addEventListener('click', async () => {
-  if (!state || ui.busy || state.active !== 'player' || state.winner) return;
-  clearSelection();
-  ui.busy = true;
-  endTurn(state, 'player');
-  render();
-  sfx.turn();
-  await wait(500);
-  while (!state.winner) {
-    const action = nextRivalAction(state);
-    if (!action) break;
-    if (action.type === 'play') {
-      const before = snapshotPositions();
-      playCard(state, 'rival', action.handIndex, action.target);
-      afterAction(before);
-    } else if (action.type === 'attack') {
-      await doAttack('rival', action.uid, action.target);
-    }
-    if (state.winner) break;
-    await wait(560);
+async function runRivalTurn() {
+  busy = true; clearSelection(); refresh();
+  announce(endTurn(state), namesSnapshot()); // hands the turn to Vesper
+  refresh();
+  await sleep(550);
+  let guard = 0;
+  while (!state.winner && guard++ < 40) {
+    const action = nextAction(state, 'rival');
+    if (action.type === 'end') break;
+    if (action.type === 'play') applyPlay('rival', action.handIndex, action.target);
+    else if (action.type === 'attack') await applyAttack('rival', action.uid, action.target);
+    if (checkEnd()) { busy = false; refresh(); return; }
+    await sleep(600);
   }
   if (!state.winner) {
-    endTurn(state, 'rival');
-    ui.busy = false;
-    render();
+    const events = endTurn(state); // back to the player: energy, wake, draw
+    busy = false;
+    refresh();
+    announce(events, namesSnapshot());
     sfx.turn();
-  } else {
-    ui.busy = false;
   }
-});
+  refresh();
+}
 
-// ————— Duel lifecycle —————
-
-function startDuel(seed) {
-  state = createDuel(seed);
+// ——— starting, restarting, demo states ———
+function startGame(seed) {
+  state = newDuel(seed);
+  logEl.replaceChildren();
   clearSelection();
-  ui.busy = false;
-  showScreen('table');
-  render();
+  busy = false;
+  const opening = startTurn(state);
+  refresh();
+  announce(opening, {});
   sfx.deal();
 }
 
-function showEnd() {
-  if (!state || !state.winner) return;
-  const won = state.winner === 'player';
-  const end = $('end-screen');
-  end.className = won ? 'victory' : 'defeat';
-  $('end-title').textContent = won ? 'VICTORY' : 'DEFEAT';
-  $('end-text').textContent = won
-    ? 'Briar’s Heart is spent and the thicket bows to a new Warden. The four Houses sing your name.'
-    : 'Your Heart fades under the thorns — this time. Briar keeps the thicket, and waits for your return.';
-  $('end-stats').textContent =
-    `The duel ran ${state.sides.player.turnsTaken} of your turns · you played ${state.plays.player} cards, Briar played ${state.plays.rival} · ` +
-    `your Heart ${Math.max(0, state.sides.player.heart)}, Briar’s ${Math.max(0, state.sides.rival.heart)}.`;
-  showScreen('end');
-  // Keep the finished table visible behind the panel.
-  $('table-screen').hidden = false;
-  if (won) {
-    sfx.win();
-    const layer = $('end-screen');
-    for (let i = 0; i < 26; i++) {
-      const ember = document.createElement('div');
-      ember.className = 'ember';
-      const size = 5 + Math.random() * 8;
-      ember.style.width = `${size}px`;
-      ember.style.height = `${size}px`;
-      ember.style.left = `${Math.random() * 100}%`;
-      ember.style.animationDuration = `${2.4 + Math.random() * 2.6}s`;
-      ember.style.animationDelay = `${Math.random() * 1.4}s`;
-      layer.appendChild(ember);
-      setTimeout(() => ember.remove(), 7000);
-    }
-  } else {
-    sfx.lose();
-  }
-}
-
-$('start-btn').addEventListener('click', () => {
-  sfx.unlock();
-  const seed = Number(params.get('seed')) || (Date.now() % 100000) + 1;
-  startDuel(seed);
-});
-$('again-btn').addEventListener('click', () => {
-  document.querySelectorAll('.ember').forEach((n) => n.remove());
-  startDuel((Date.now() % 100000) + 1);
-});
-
-// ————— Screenshot states (the maker's own renders, like the kit starter) —
-// A policy that plays a fair, aggressive game for the player side, used to
-// reach real mid-game and end states deterministically from a seed.
-
-function shotPlayerPolicy(s) {
-  const P = 'player';
+// Play a whole game headlessly with Vesper's brain on both sides; used
+// only by the demo states below, never by a human's game.
+function autoplay(seed, stopAt) {
+  const s = newDuel(seed);
+  startTurn(s);
   let guard = 0;
-  while (!s.winner && guard++ < 30) {
-    const idxs = playableCards(s, P);
-    if (idxs.length === 0) break;
-    let acted = false;
-    // Champions first, biggest affordable.
-    const champIdx = idxs
-      .filter((i) => CARDS[s.sides[P].hand[i]].kind === 'champion')
-      .sort((a, b) => CARDS[s.sides[P].hand[b]].cost - CARDS[s.sides[P].hand[a]].cost)[0];
-    if (champIdx != null) { playCard(s, P, champIdx, null); acted = true; }
-    if (!acted) {
-      for (const i of idxs) {
-        const def = CARDS[s.sides[P].hand[i]];
-        if (def.kind !== 'trick') continue;
-        const eff = def.effect;
-        if (eff.type === 'draw') { playCard(s, P, i, null); acted = true; break; }
-        if (eff.type === 'healDraw' && s.sides[P].heart <= 12) { playCard(s, P, i, null); acted = true; break; }
-        if (eff.type === 'buff' && s.sides[P].board.length) {
-          const big = [...s.sides[P].board].sort((a, b) => b.atk - a.atk)[0];
-          playCard(s, P, i, { owner: P, uid: big.uid }); acted = true; break;
-        }
-        if ((eff.type === 'damage' || eff.type === 'freezeDamage')) {
-          const amount = eff.amount + (isKindled(s, P, def) ? def.kindleBonus || 0 : 0);
-          const kill = s.sides.rival.board.filter((c) => c.hp <= amount).sort((a, b) => b.atk - a.atk)[0];
-          if (kill) { playCard(s, P, i, { owner: 'rival', uid: kill.uid }); acted = true; break; }
-          if (eff.type === 'damage' && s.sides.rival.heart <= amount) {
-            playCard(s, P, i, { owner: 'rival', heart: true }); acted = true; break;
-          }
-        }
-        if (eff.type === 'damageAllEnemyChampions') {
-          const amount = eff.amount + (isKindled(s, P, def) ? def.kindleBonus || 0 : 0);
-          if (s.sides.rival.board.filter((c) => c.hp <= amount).length >= 2) {
-            playCard(s, P, i, null); acted = true; break;
-          }
-        }
-        if (eff.type === 'bounce') {
-          const big = [...s.sides.rival.board].sort((a, b) => CARDS[b.cardId].cost - CARDS[a.cardId].cost)[0];
-          if (big && CARDS[big.cardId].cost >= 4) { playCard(s, P, i, { owner: 'rival', uid: big.uid }); acted = true; break; }
-        }
-      }
-    }
-    if (!acted) break;
+  while (!s.winner && guard++ < 500) {
+    if (stopAt && stopAt(s)) break;
+    const action = nextAction(s, s.active);
+    if (action.type === 'end') endTurn(s);
+    else if (action.type === 'play') playCard(s, s.active, action.handIndex, action.target);
+    else if (action.type === 'attack') attack(s, s.active, action.uid, action.target);
   }
-  // Attacks: Guards first, then clean kills, then the Heart.
-  guard = 0;
-  while (!s.winner && guard++ < 20) {
-    const ready = s.sides[P].board.filter((ch) => canAttack(s, P, ch));
-    if (!ready.length) break;
-    const ch = ready[0];
-    const guards = guardChampions(s, 'rival');
-    if (guards.length) { attack(s, P, ch.uid, { owner: 'rival', uid: guards[0].uid }); continue; }
-    const kill = s.sides.rival.board.filter((t) => t.hp <= ch.atk && t.atk >= ch.atk)[0];
-    if (kill) { attack(s, P, ch.uid, { owner: 'rival', uid: kill.uid }); continue; }
-    attack(s, P, ch.uid, { owner: 'rival', heart: true });
-  }
-}
-
-function shotRivalPhase(s) {
-  let guard = 0;
-  while (!s.winner && guard++ < 40) {
-    const action = nextRivalAction(s);
-    if (!action) break;
-    if (action.type === 'play') playCard(s, 'rival', action.handIndex, action.target);
-    else attack(s, 'rival', action.uid, action.target);
-  }
-}
-
-function buildShotState(seed, mode) {
-  const s = createDuel(seed);
-  let rounds = 0;
-  while (!s.winner && rounds++ < 40) {
-    if (mode === 'table' && s.sides.player.turnsTaken >= 4) break;
-    if (mode !== 'defeat') shotPlayerPolicy(s);
-    if (s.winner) break;
-    endTurn(s, 'player');
-    shotRivalPhase(s);
-    if (s.winner) break;
-    endTurn(s, 'rival');
-  }
-  s.fx.length = 0;
   return s;
 }
 
-function initShots() {
-  const shot = params.get('shot');
-  const seed = Number(params.get('seed')) || 7;
-  if (!shot || shot === 'title') {
-    showScreen('title');
-    window.__shotDone = true;
-    return;
-  }
-  state = buildShotState(seed, shot);
+function adoptDemoState(s) {
+  state = s;
+  logEl.replaceChildren();
   clearSelection();
-  showScreen('table');
-  render();
-  if (shot === 'victory' || shot === 'defeat') {
-    showEnd();
-  }
-  setTimeout(() => { window.__shotDone = true; }, 450);
+  busy = false;
+  refresh();
 }
 
-window.__duel = {
-  get state() { return state; },
-  startDuel,
-  buildShotState,
-};
+// A mid-game table worth looking at: round 3 or 4, both boards manned,
+// the player's hand still holding choices. Seeds are tried in order
+// until one deals such a table.
+function livelyTable() {
+  const lively = (s) => s.round >= 3 && s.active === 'player'
+    && s.sides.rival.board.length >= 2 && s.sides.player.board.length >= 2
+    && s.sides.player.hand.length >= 4;
+  for (let seed = baseSeed; seed < baseSeed + 60; seed++) {
+    const s = autoplay(seed, lively);
+    if (lively(s)) return s;
+  }
+  return autoplay(baseSeed, (s) => s.round >= 3 && s.active === 'player');
+}
 
-initShots();
+function setupShot(kind) {
+  $('titleScreen').classList.add('hidden');
+  if (kind === 'table') {
+    adoptDemoState(livelyTable());
+  } else if (kind === 'victory' || kind === 'defeat') {
+    const want = kind === 'victory' ? 'player' : 'rival';
+    let found = null;
+    for (let seed = baseSeed; seed < baseSeed + 300 && !found; seed++) {
+      const s = autoplay(seed);
+      if (s.winner === want) found = s;
+    }
+    adoptDemoState(found || autoplay(baseSeed));
+    checkEnd();
+  }
+}
+
+// ——— wiring ———
+refs.playerHand.addEventListener('click', (e) => {
+  const card = e.target.closest('[data-hand-index]');
+  if (card) onHandClick(Number(card.dataset.handIndex));
+});
+for (const holder of [refs.playerBoard, refs.rivalBoard]) {
+  holder.addEventListener('click', (e) => {
+    const card = e.target.closest('[data-uid]');
+    if (card) onBoardClick(card.dataset.side, Number(card.dataset.uid));
+  });
+}
+refs.rivalHeart.addEventListener('click', () => onHeartClick('rival'));
+refs.playerHeart.addEventListener('click', () => onHeartClick('player'));
+refs.endTurn.addEventListener('click', () => { if (!busy) runRivalTurn(); });
+document.addEventListener('keydown', (e) => {
+  if (!$('titleScreen').classList.contains('hidden')) return;
+  if (e.key === 'Escape') { clearSelection(); refresh(); }
+  if ((e.key === 'e' || e.key === 'E' || e.key === 'Enter') && !busy && state.active === 'player') runRivalTurn();
+  const n = Number(e.key);
+  if (n >= 1 && n <= 9) onHandClick(n - 1);
+});
+$('startBtn').addEventListener('click', () => {
+  $('titleScreen').classList.add('hidden');
+  startGame((Math.random() * 1e9) | 0);
+});
+$('againBtn').addEventListener('click', () => {
+  $('endScreen').classList.add('hidden');
+  startGame((Math.random() * 1e9) | 0);
+});
+$('helpBtn').addEventListener('click', () => $('helpScreen').classList.remove('hidden'));
+$('helpClose').addEventListener('click', () => $('helpScreen').classList.add('hidden'));
+$('muteBtn').addEventListener('click', (e) => {
+  setMuted(!isMuted());
+  e.currentTarget.textContent = isMuted() ? '🔇 Muted' : '🔊 Sound';
+});
+
+// First paint: a living table behind the title, or a demo state when a
+// screenshot asked for one.
+const shot = params.get('shot');
+if (shot) {
+  setupShot(shot);
+} else {
+  adoptDemoState(livelyTable());
+}

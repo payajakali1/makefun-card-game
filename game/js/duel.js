@@ -1,331 +1,359 @@
-// duel.js — the Emberfall Duel rules engine. No DOM in here: the engine
-// keeps the whole game state, validates every action, and appends visual
-// effect notes to state.fx for the renderer to animate. The renderer and
-// the rival both drive the game only through these functions.
+// duel.js — the Emberfall Duel rules engine. No DOM, no rendering: this
+// file only knows cards, hearts, energy and whose turn it is, so the same
+// code can be driven by the browser table, by Vesper the rival, or by a
+// headless balance harness.
+//
+// Shape of a duel:
+//   state.sides.player / state.sides.rival — { heart, energy, maxEnergy,
+//     deck: [cardId], hand: [cardId], board: [champion], fatigue }
+//   champion — { uid, id, atk, hp, maxHp, sick, spent, rooted, holdFast,
+//     kindled }
+//   state.active — whose turn it is; state.winner — null, 'player',
+//     'rival' or 'draw' once a Heart reaches 0.
+// Every mutating call returns a list of event objects ({type, ...}) that
+// the table uses for floaters and sounds; the engine itself stays silent.
 
 import { CARDS, DECKLIST } from './cards.js';
-import { makeRng, shuffleInPlace, makeChampionInstance, resetUidCounter } from './deck.js';
+import { makeRng, buildDeck } from './deck.js';
 
-export const MAX_BOARD = 5;
-export const MAX_ENERGY = 8;
-export const START_HEART = 20;
+export const MAX_HEART = 20;
+export const BOARD_MAX = 5;
+export const HAND_MAX = 9;
+export const ENERGY_MAX = 8;
 
-export function other(who) {
-  return who === 'player' ? 'rival' : 'player';
+export const otherSide = (side) => (side === 'player' ? 'rival' : 'player');
+
+function freshSide(deck) {
+  return {
+    heart: MAX_HEART, energy: 0, maxEnergy: 0,
+    deck, hand: [], board: [], fatigue: 0,
+  };
 }
 
-export function createDuel(seed) {
-  resetUidCounter();
+// A new duel: both duelists carry the same 32-card deck, shuffled from
+// the seed. The player opens with four cards; the rival, who answers
+// second, opens with five.
+export function newDuel(seed) {
   const rng = makeRng(seed);
-  const mkSide = () => ({
-    heart: START_HEART,
-    energy: 0,
-    turnsTaken: 0,
-    fatigue: 0,
-    deck: shuffleInPlace([...DECKLIST], rng),
-    hand: [],
-    board: [],
-  });
   const state = {
     rng,
     seed,
-    turn: 1,
     active: 'player',
     winner: null,
-    log: [],
-    fx: [],
-    plays: { player: 0, rival: 0 },
-    sides: { player: mkSide(), rival: mkSide() },
+    round: 1,
+    nextUid: 1,
+    housesPlayed: { player: {}, rival: {} },
+    felled: { player: 0, rival: 0 },
+    sides: {
+      player: freshSide(buildDeck(DECKLIST, rng)),
+      rival: freshSide(buildDeck(DECKLIST, rng)),
+    },
   };
-  drawCards(state, 'player', 4);
-  // Going second is a real disadvantage, so Briar opens with five cards.
-  drawCards(state, 'rival', 5);
-  beginTurn(state, 'player', true);
-  logLine(state, 'The duel begins. You take the first turn; Briar drew an extra card for going second.');
+  drawCards(state, 'player', 4, []);
+  drawCards(state, 'rival', 5, []);
   return state;
 }
 
-export function logLine(state, text) {
-  state.log.push(text);
-  if (state.log.length > 40) state.log.shift();
-}
-
-export function drawCards(state, who, count) {
-  const side = state.sides[who];
-  for (let i = 0; i < count; i++) {
+// Draw n cards. An empty deck bites: the draw becomes fatigue damage
+// that grows by 1 every time. A full hand burns the card instead.
+export function drawCards(state, sideKey, n, events) {
+  const side = state.sides[sideKey];
+  for (let i = 0; i < n; i++) {
+    if (state.winner) return;
     if (side.deck.length === 0) {
       side.fatigue += 1;
-      damageHeart(state, who, side.fatigue, 'fatigue');
-      logLine(state, `${label(who)} is out of cards and takes ${side.fatigue} fatigue damage.`);
-      if (state.winner) return;
-      continue;
+      side.heart -= side.fatigue;
+      events.push({ type: 'fatigue', side: sideKey, amount: side.fatigue });
+      settleWinner(state, events);
+    } else if (side.hand.length >= HAND_MAX) {
+      const burned = side.deck.pop();
+      events.push({ type: 'burn', side: sideKey, cardId: burned });
+    } else {
+      side.hand.push(side.deck.pop());
+      events.push({ type: 'draw', side: sideKey });
     }
-    side.hand.push(side.deck.pop());
   }
 }
 
-export function label(who) {
-  return who === 'player' ? 'You' : 'Briar';
+function settleWinner(state, events) {
+  if (state.winner) return;
+  const p = state.sides.player.heart;
+  const r = state.sides.rival.heart;
+  if (p <= 0 && r <= 0) state.winner = 'draw';
+  else if (r <= 0) state.winner = 'player';
+  else if (p <= 0) state.winner = 'rival';
+  if (state.winner) events.push({ type: 'gameover', winner: state.winner });
 }
 
-export function beginTurn(state, who, isFirstTurnOfGame = false) {
-  const side = state.sides[who];
-  state.active = who;
-  side.turnsTaken += 1;
-  state.turn = side.turnsTaken;
-  side.energy = Math.min(side.turnsTaken, MAX_ENERGY);
-  for (const ch of side.board) {
-    ch.sick = false;
-    ch.attacked = false;
-    // Note: frozen is NOT cleared here. A champion frozen during the
-    // opponent's turn must sit out this whole turn; endTurn thaws it.
+// Begin the active side's turn: energy grows and refills, last turn's
+// champions wake, rooted champions stay tangled for this one turn, and
+// a card is drawn.
+export function startTurn(state) {
+  const events = [];
+  const sideKey = state.active;
+  const side = state.sides[sideKey];
+  side.maxEnergy = Math.min(ENERGY_MAX, side.maxEnergy + 1);
+  side.energy = side.maxEnergy;
+  state.housesPlayed[sideKey] = {};
+  for (const champ of side.board) {
+    champ.sick = false;
+    champ.spent = false;
+    champ.holdFast = champ.rooted;
+    champ.rooted = false;
   }
-  if (!isFirstTurnOfGame) drawCards(state, who, 1);
+  events.push({ type: 'turn', side: sideKey, round: state.round });
+  drawCards(state, sideKey, 1, events);
+  return events;
 }
 
-export function houseOnBoard(state, who, house) {
-  return state.sides[who].board.some((ch) => CARDS[ch.cardId].house === house);
+export function endTurn(state) {
+  if (state.winner) return [];
+  state.active = otherSide(state.active);
+  if (state.active === 'player') state.round += 1;
+  return startTurn(state);
 }
 
-export function isKindled(state, who, def) {
-  return houseOnBoard(state, who, def.house);
+export function championByUid(state, sideKey, uid) {
+  return state.sides[sideKey].board.find((c) => c.uid === uid) || null;
 }
 
-export function playableCards(state, who) {
-  const side = state.sides[who];
+function hasKeyword(champ, word) {
+  const def = CARDS[champ.id];
+  return def.keyword === word || def.keyword2 === word;
+}
+
+// Is this card playable right now, and if so, is it Kindled, and what
+// may it target? targetMode: null (no choice), 'anything', 'enemyChamp',
+// 'friendChamp'.
+export function cardPlayInfo(state, sideKey, handIndex) {
+  const side = state.sides[sideKey];
+  const cardId = side.hand[handIndex];
+  if (!cardId || state.winner || state.active !== sideKey) return null;
+  const def = CARDS[cardId];
+  if (def.cost > side.energy) return null;
+  const kindled = (state.housesPlayed[sideKey][def.house] || 0) > 0;
+  if (def.kind === 'champion') {
+    if (side.board.length >= BOARD_MAX) return null;
+    return { cardId, def, kindled, targetMode: null };
+  }
+  switch (def.effect.type) {
+    case 'damage': return { cardId, def, kindled, targetMode: 'anything' };
+    case 'bounce':
+    case 'rootDamage': {
+      if (state.sides[otherSide(sideKey)].board.length === 0) return null;
+      return { cardId, def, kindled, targetMode: 'enemyChamp' };
+    }
+    case 'buff': {
+      if (side.board.length === 0) return null;
+      return { cardId, def, kindled, targetMode: 'friendChamp' };
+    }
+    default: return { cardId, def, kindled, targetMode: null };
+  }
+}
+
+export function playableCards(state, sideKey) {
   const out = [];
-  side.hand.forEach((cardId, index) => {
-    const def = CARDS[cardId];
-    if (def.cost > side.energy) return;
-    if (def.kind === 'champion' && side.board.length >= MAX_BOARD) return;
-    out.push(index);
+  state.sides[sideKey].hand.forEach((_, i) => {
+    const info = cardPlayInfo(state, sideKey, i);
+    if (info) out.push({ handIndex: i, ...info });
   });
   return out;
 }
 
-// Does this trick need a target, and of what kind?
-export function trickTargetKind(def) {
-  if (def.kind !== 'trick') return null;
-  switch (def.effect.type) {
-    case 'damage': return 'anyTarget';
-    case 'freezeDamage': return 'anyChampion';
-    case 'buff': return 'friendlyChampion';
-    case 'bounce': return 'enemyChampion';
-    default: return null;
+// Damage a champion; if the blow came from a Drain champion, its keeper
+// mends by the damage dealt. Deaths are swept by the caller.
+function strikeChampion(state, events, ownerKey, champ, amount, attackerChamp, attackerKey) {
+  champ.hp -= amount;
+  events.push({ type: 'championHurt', side: ownerKey, uid: champ.uid, amount });
+  if (attackerChamp && hasKeyword(attackerChamp, 'drain')) {
+    mendHeart(state, events, attackerKey, amount);
   }
 }
 
-export function guardChampions(state, who) {
-  return state.sides[who].board.filter((ch) => hasKeyword(ch, 'guard'));
+function mendHeart(state, events, sideKey, amount) {
+  const side = state.sides[sideKey];
+  const healed = Math.min(MAX_HEART, side.heart + amount) - side.heart;
+  if (healed > 0) {
+    side.heart += healed;
+    events.push({ type: 'heal', side: sideKey, amount: healed });
+  }
 }
 
-export function hasKeyword(ch, keyword) {
-  const def = CARDS[ch.cardId];
-  return def.keyword === keyword || def.keyword2 === keyword;
+function hurtHeart(state, events, sideKey, amount, attackerChamp, attackerKey) {
+  state.sides[sideKey].heart -= amount;
+  events.push({ type: 'heartHurt', side: sideKey, amount });
+  if (attackerChamp && hasKeyword(attackerChamp, 'drain')) {
+    mendHeart(state, events, attackerKey, amount);
+  }
+  settleWinner(state, events);
 }
 
-export function findChampion(state, who, uid) {
-  return state.sides[who].board.find((ch) => ch.uid === uid) || null;
+// Remove the dead from both boards, counting the fallen for the end panel.
+function sweepDeaths(state, events) {
+  for (const sideKey of ['player', 'rival']) {
+    const side = state.sides[sideKey];
+    const dead = side.board.filter((c) => c.hp <= 0);
+    if (dead.length) {
+      side.board = side.board.filter((c) => c.hp > 0);
+      for (const champ of dead) {
+        state.felled[otherSide(sideKey)] += 1;
+        events.push({ type: 'death', side: sideKey, uid: champ.uid, cardId: champ.id });
+      }
+    }
+  }
 }
 
-// Play a card from hand. target: null, or { owner, uid } for a champion, or
-// { owner, heart: true } for a duelist's Heart. Returns true when legal.
-export function playCard(state, who, handIndex, target = null) {
-  if (state.winner || state.active !== who) return false;
-  const side = state.sides[who];
-  const foe = state.sides[other(who)];
-  const cardId = side.hand[handIndex];
-  if (!cardId) return false;
-  const def = CARDS[cardId];
-  if (def.cost > side.energy) return false;
-  const kindled = isKindled(state, who, def);
+// Play the card at handIndex. target, when the card needs one:
+//   { kind: 'heart', side } or { kind: 'champion', side, uid }
+export function playCard(state, sideKey, handIndex, target) {
+  const info = cardPlayInfo(state, sideKey, handIndex);
+  if (!info) return { ok: false, reason: 'not playable', events: [] };
+  const events = [];
+  const side = state.sides[sideKey];
+  const foeKey = otherSide(sideKey);
+  const { def, kindled } = info;
+  const bonus = kindled ? def.kindleBonus || 0 : 0;
+
+  side.energy -= def.cost;
+  side.hand.splice(handIndex, 1);
+  state.housesPlayed[sideKey][def.house] = (state.housesPlayed[sideKey][def.house] || 0) + 1;
+  events.push({ type: 'play', side: sideKey, cardId: info.cardId, kindled });
 
   if (def.kind === 'champion') {
-    if (side.board.length >= MAX_BOARD) return false;
-    side.hand.splice(handIndex, 1);
-    side.energy -= def.cost;
-    const ch = makeChampionInstance(cardId, def);
-    if (kindled) { ch.atk += 1; ch.hp += 1; ch.maxHp += 1; }
-    side.board.push(ch);
-    state.plays[who] += 1;
-    state.fx.push({ type: 'summon', owner: who, uid: ch.uid, kindled });
-    logLine(state, `${label(who)} played ${def.name}${kindled ? ' (Kindled +1/+1)' : ''}.`);
-    return true;
+    const champ = {
+      uid: state.nextUid++,
+      id: info.cardId,
+      atk: def.atk + (kindled ? 1 : 0),
+      hp: def.hp + (kindled ? 1 : 0),
+      maxHp: def.hp + (kindled ? 1 : 0),
+      sick: def.keyword !== 'swift',
+      spent: false,
+      rooted: false,
+      holdFast: false,
+      kindled,
+    };
+    side.board.push(champ);
+    events.push({ type: 'summon', side: sideKey, uid: champ.uid, cardId: champ.id, kindled });
+  } else {
+    resolveTrick(state, events, sideKey, foeKey, def, bonus, target);
   }
+  sweepDeaths(state, events);
+  settleWinner(state, events);
+  return { ok: true, events };
+}
 
-  // Tricks: validate the target before paying anything.
-  const need = trickTargetKind(def);
-  if (need && !target) return false;
-  let targetChamp = null;
-  let targetOwner = null;
-  if (target && target.uid != null) {
-    targetOwner = target.owner;
-    targetChamp = findChampion(state, targetOwner, target.uid);
-    if (!targetChamp) return false;
-  }
-  if (need === 'friendlyChampion' && targetOwner !== who) return false;
-  if (need === 'enemyChampion' && targetOwner === who) return false;
-  if (need === 'anyTarget' && !target) return false;
-
-  side.hand.splice(handIndex, 1);
-  side.energy -= def.cost;
-  const bonus = kindled ? def.kindleBonus || 0 : 0;
-  const eff = def.effect;
-  const foeWho = other(who);
-
-  switch (eff.type) {
+function resolveTrick(state, events, sideKey, foeKey, def, bonus, target) {
+  const foe = state.sides[foeKey];
+  const e = def.effect;
+  switch (e.type) {
     case 'damage': {
-      const amount = eff.amount + bonus;
-      if (target.heart) damageHeart(state, target.owner, amount, 'trick');
-      else damageChampion(state, targetOwner, targetChamp, amount, who);
+      const amount = e.amount + bonus;
+      if (target && target.kind === 'heart') {
+        hurtHeart(state, events, target.side, amount, null, sideKey);
+      } else if (target && target.kind === 'champion') {
+        const champ = championByUid(state, target.side, target.uid);
+        if (champ) strikeChampion(state, events, target.side, champ, amount, null, sideKey);
+      }
       break;
     }
     case 'damageAllEnemyChampions': {
-      const amount = eff.amount + bonus;
-      for (const ch of [...foe.board]) damageChampion(state, foeWho, ch, amount, who);
+      const amount = e.amount + bonus;
+      for (const champ of foe.board.slice()) {
+        strikeChampion(state, events, foeKey, champ, amount, null, sideKey);
+      }
       break;
     }
     case 'healDraw': {
-      healHeart(state, who, eff.amount + bonus);
-      drawCards(state, who, eff.draw);
+      mendHeart(state, events, sideKey, e.amount + bonus);
+      drawCards(state, sideKey, e.draw || 0, events);
       break;
     }
-    case 'freezeDamage': {
-      damageChampion(state, targetOwner, targetChamp, eff.amount + bonus, who);
-      if (targetChamp.hp > 0) {
-        targetChamp.frozen = true;
-        state.fx.push({ type: 'freeze', owner: targetOwner, uid: targetChamp.uid });
+    case 'bounce': {
+      const champ = target && championByUid(state, foeKey, target.uid);
+      if (champ) {
+        foe.board = foe.board.filter((c) => c.uid !== champ.uid);
+        if (foe.hand.length < HAND_MAX) foe.hand.push(champ.id);
+        events.push({ type: 'bounce', side: foeKey, uid: champ.uid, cardId: champ.id });
       }
       break;
     }
     case 'buff': {
-      targetChamp.atk += eff.atk + bonus;
-      targetChamp.hp += eff.hp + bonus;
-      targetChamp.maxHp += eff.hp + bonus;
-      state.fx.push({ type: 'buff', owner: who, uid: targetChamp.uid });
-      break;
-    }
-    case 'draw': {
-      drawCards(state, who, eff.amount + bonus);
-      break;
-    }
-    case 'bounce': {
-      const idx = foe.board.indexOf(targetChamp);
-      if (idx >= 0) {
-        foe.board.splice(idx, 1);
-        foe.hand.push(targetChamp.cardId);
-        state.fx.push({ type: 'bounce', owner: foeWho, uid: targetChamp.uid });
+      const champ = target && championByUid(state, sideKey, target.uid);
+      if (champ) {
+        champ.atk += e.atk + bonus;
+        champ.hp += e.hp + bonus;
+        champ.maxHp += e.hp + bonus;
+        events.push({ type: 'buff', side: sideKey, uid: champ.uid });
       }
       break;
     }
-    default:
-      return false;
-  }
-  state.plays[who] += 1;
-  logLine(state, `${label(who)} played ${def.name}${kindled && bonus ? ' (Kindled)' : ''}.`);
-  sweepDeaths(state);
-  checkWinner(state);
-  return true;
-}
-
-export function canAttack(state, who, ch) {
-  return (
-    !state.winner &&
-    state.active === who &&
-    !ch.sick &&
-    !ch.frozen &&
-    !ch.attacked &&
-    ch.atk > 0
-  );
-}
-
-// Attack with a champion. target: { owner, uid } or { owner, heart: true }.
-export function attack(state, who, attackerUid, target) {
-  if (state.winner || state.active !== who) return false;
-  const side = state.sides[who];
-  const foeWho = other(who);
-  const foe = state.sides[foeWho];
-  const attacker = findChampion(state, who, attackerUid);
-  if (!attacker || !canAttack(state, who, attacker)) return false;
-
-  const guards = guardChampions(state, foeWho);
-  let defender = null;
-  if (target.heart) {
-    if (guards.length > 0) return false;
-  } else {
-    defender = findChampion(state, foeWho, target.uid);
-    if (!defender) return false;
-    if (guards.length > 0 && !hasKeyword(defender, 'guard')) return false;
-  }
-
-  attacker.attacked = true;
-  state.fx.push({ type: 'lunge', owner: who, uid: attacker.uid });
-
-  if (defender) {
-    damageChampion(state, foeWho, defender, attacker.atk, who, attacker);
-    // The defender strikes back only if it still stands; a defender killed
-    // by the blow does not answer (keeps trades readable).
-    if (defender.hp > 0) damageChampion(state, who, attacker, defender.atk, foeWho, defender);
-    if (hasKeyword(defender, 'thorns') && attacker.hp > 0) {
-      damageChampion(state, who, attacker, 1, foeWho, defender);
+    case 'rootDamage': {
+      const champ = target && championByUid(state, foeKey, target.uid);
+      if (champ) {
+        strikeChampion(state, events, foeKey, champ, e.amount + bonus, null, sideKey);
+        if (champ.hp > 0) {
+          champ.rooted = true;
+          events.push({ type: 'root', side: foeKey, uid: champ.uid });
+        }
+      }
+      break;
     }
-    logLine(state, `${CARDS[attacker.cardId].name} struck ${CARDS[defender.cardId].name}.`);
-  } else {
-    damageHeart(state, foeWho, attacker.atk, 'attack');
-    if (hasKeyword(attacker, 'drain')) healHeart(state, who, attacker.atk);
-    logLine(state, `${CARDS[attacker.cardId].name} hit ${label(foeWho)}’s Heart for ${attacker.atk}.`);
-  }
-
-  sweepDeaths(state);
-  checkWinner(state);
-  return true;
-}
-
-export function damageChampion(state, owner, ch, amount, sourceWho, sourceChamp = null) {
-  ch.hp -= amount;
-  state.fx.push({ type: 'damage', owner, uid: ch.uid, amount });
-  if (sourceChamp && hasKeyword(sourceChamp, 'drain')) {
-    healHeart(state, sourceWho, amount);
-  }
-}
-
-export function damageHeart(state, who, amount, _cause) {
-  state.sides[who].heart -= amount;
-  state.fx.push({ type: 'heartDamage', owner: who, amount });
-}
-
-export function healHeart(state, who, amount) {
-  const side = state.sides[who];
-  const healed = Math.min(amount, START_HEART - side.heart);
-  side.heart += healed;
-  if (healed > 0) state.fx.push({ type: 'heal', owner: who, amount: healed });
-}
-
-export function sweepDeaths(state) {
-  for (const who of ['player', 'rival']) {
-    const side = state.sides[who];
-    const dead = side.board.filter((ch) => ch.hp <= 0);
-    for (const ch of dead) {
-      state.fx.push({ type: 'death', owner: who, uid: ch.uid });
-      logLine(state, `${CARDS[ch.cardId].name} fell.`);
+    case 'sap': {
+      const amount = e.amount + bonus;
+      hurtHeart(state, events, foeKey, amount, null, sideKey);
+      mendHeart(state, events, sideKey, amount);
+      break;
     }
-    side.board = side.board.filter((ch) => ch.hp > 0);
+    default: break;
   }
 }
 
-export function checkWinner(state) {
-  const p = state.sides.player.heart;
-  const r = state.sides.rival.heart;
-  if (r <= 0 && p > 0) state.winner = 'player';
-  else if (p <= 0 && r > 0) state.winner = 'rival';
-  else if (p <= 0 && r <= 0) state.winner = 'player'; // a mutual fall goes to the challenger
+// Which targets may this champion attack? Guards narrow the choice:
+// while any enemy Guard stands, only Guards may be attacked.
+export function attackTargets(state, sideKey, uid) {
+  const foe = state.sides[otherSide(sideKey)];
+  const guards = foe.board.filter((c) => hasKeyword(c, 'guard'));
+  if (guards.length) {
+    return guards.map((c) => ({ kind: 'champion', side: otherSide(sideKey), uid: c.uid }));
+  }
+  return [
+    { kind: 'heart', side: otherSide(sideKey) },
+    ...foe.board.map((c) => ({ kind: 'champion', side: otherSide(sideKey), uid: c.uid })),
+  ];
 }
 
-export function endTurn(state, who) {
-  if (state.winner || state.active !== who) return false;
-  // Freeze lasts exactly one of the frozen champion's turns: it thaws as
-  // that turn ends, having been unable to attack throughout it.
-  for (const ch of state.sides[who].board) ch.frozen = false;
-  beginTurn(state, other(who));
-  return true;
+export function canAttack(state, sideKey, uid) {
+  if (state.winner || state.active !== sideKey) return false;
+  const champ = championByUid(state, sideKey, uid);
+  return !!champ && !champ.sick && !champ.spent && !champ.holdFast;
+}
+
+// One champion attacks one target. The defender strikes back only if it
+// survives the blow; a Thorns defender stings the attacker for 1 more.
+export function attack(state, sideKey, uid, target) {
+  if (!canAttack(state, sideKey, uid)) return { ok: false, reason: 'cannot attack', events: [] };
+  const legal = attackTargets(state, sideKey, uid);
+  const isLegal = legal.some((t) => t.kind === target.kind && t.side === target.side && t.uid === target.uid);
+  if (!isLegal) return { ok: false, reason: 'illegal target', events: [] };
+  const events = [];
+  const foeKey = otherSide(sideKey);
+  const attacker = championByUid(state, sideKey, uid);
+  attacker.spent = true;
+  events.push({ type: 'attack', side: sideKey, uid, target });
+
+  if (target.kind === 'heart') {
+    hurtHeart(state, events, foeKey, attacker.atk, attacker, sideKey);
+  } else {
+    const defender = championByUid(state, foeKey, target.uid);
+    strikeChampion(state, events, foeKey, defender, attacker.atk, attacker, sideKey);
+    if (defender.hp > 0) {
+      strikeChampion(state, events, sideKey, attacker, defender.atk, defender, foeKey);
+      if (hasKeyword(defender, 'thorns') && attacker.hp > 0) {
+        strikeChampion(state, events, sideKey, attacker, 1, null, foeKey);
+      }
+    }
+  }
+  sweepDeaths(state, events);
+  settleWinner(state, events);
+  return { ok: true, events };
 }

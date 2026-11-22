@@ -1,153 +1,156 @@
-// cards.js — the Emberfall Duel card catalogue.
+// cards.js — the Emberfall Duel catalogue: four Houses, twenty-three cards.
 //
-// Every card belongs to one of four Houses. Houses are told apart by colour
-// AND by shape (a triangle, a circle, a cross, a diamond), never by text
-// alone. Champions stay on the table and fight; Tricks resolve at once.
+// A House is known by its colour AND its shape — triangle, circle, cross,
+// diamond — so two Houses are never told apart by words alone. Champions
+// stay on the table and fight for you; Tricks fire once and are gone.
 //
-// Keywords:
-//   Swift  — may attack on the turn it is played.
-//   Guard  — enemies must attack this champion before any other target.
-//   Thorns — attackers take 1 damage back when they strike this champion.
-//   Drain  — damage this champion deals also heals its owner's Heart.
-//   Freeze — (from Frostbite) a frozen champion cannot attack next turn.
+// The keywords:
+//   Swift  — no summoning sickness; it may attack the turn it arrives.
+//   Guard  — the enemy must spend their attacks on Guards before anything
+//            else on that side of the table.
+//   Thorns — whatever strikes this champion takes 1 damage back.
+//   Drain  — when this champion deals damage, its keeper's Heart mends
+//            by the same amount.
+//   Rooted — not a printed keyword: Tangling Vines roots a champion so it
+//            cannot attack on its keeper's next turn.
 //
-// Kindle: when you play a card while you already control a champion of the
-// same House, the card is Kindled — champions enter with +1/+1 and Tricks
-// gain the bonus written on them. Sequencing your plays by House is the
-// game's central decision.
+// KINDLE, the heart of the game: the second card you play in a turn from a
+// House you have already played that turn is Kindled. A Kindled champion
+// walks in with +1/+1; a Kindled Trick does the bigger thing its text
+// promises. So a turn is a small puzzle: spend your cards in House order
+// and the second one always lands harder.
 
 export const HOUSES = {
-  ember: { name: 'Ember', glyph: '▲', color: '#f06423', deep: '#7a2a0e' },
-  tide: { name: 'Tide', glyph: '●', color: '#2f8fe8', deep: '#123f6e' },
-  thorn: { name: 'Thorn', glyph: '✚', color: '#43b04c', deep: '#1d5426' },
-  gale: { name: 'Gale', glyph: '◆', color: '#a55eea', deep: '#4e2472' },
+  ember: { name: 'Ember', glyph: '▲', colour: '#e85d1f', deep: '#6e2405' },
+  tide: { name: 'Tide', glyph: '●', colour: '#2e8de0', deep: '#0f3a63' },
+  thorn: { name: 'Thorn', glyph: '✚', colour: '#3fa34d', deep: '#17451f' },
+  gloom: { name: 'Gloom', glyph: '◆', colour: '#8b5cc7', deep: '#38204f' },
 };
 
 export const CARDS = {
-  // ——— Ember champions ———
-  cinderImp: {
-    name: 'Cinder Imp', house: 'ember', kind: 'champion', cost: 1, atk: 2, hp: 1,
-    motif: 'flame', text: 'Small, rude, flammable.',
+  // ——— Ember: fast, hot, and first to the throat ———
+  emberSprite: {
+    name: 'Ember Sprite', house: 'ember', kind: 'champion', cost: 1, atk: 2, hp: 1,
+    motif: 'spark', text: 'A coal that learned to grin.',
   },
-  ashHound: {
-    name: 'Ash Hound', house: 'ember', kind: 'champion', cost: 2, atk: 3, hp: 2,
-    keyword: 'swift', motif: 'fang', text: 'Swift. It runs before the fire does.',
+  cinderHound: {
+    name: 'Cinder Hound', house: 'ember', kind: 'champion', cost: 2, atk: 3, hp: 2,
+    keyword: 'swift', motif: 'fang', text: 'Swift. The ash has not settled before it bites.',
   },
-  forgeGolem: {
-    name: 'Forge Golem', house: 'ember', kind: 'champion', cost: 4, atk: 4, hp: 5,
-    keyword: 'guard', motif: 'anvil', text: 'Guard. Built to stand in the doorway.',
+  forgeSentinel: {
+    name: 'Forge Sentinel', house: 'ember', kind: 'champion', cost: 4, atk: 3, hp: 6,
+    keyword: 'guard', motif: 'anvil', text: 'Guard. It holds the gate and hums with heat.',
   },
-  pyreDrake: {
-    name: 'Pyre Drake', house: 'ember', kind: 'champion', cost: 6, atk: 6, hp: 5,
-    motif: 'wing', text: 'The sky over Emberfall belongs to it.',
+  infernoDrake: {
+    name: 'Inferno Drake', house: 'ember', kind: 'champion', cost: 6, atk: 6, hp: 5,
+    motif: 'wing', text: 'Emberfall burns a little brighter when it hunts.',
   },
-  // ——— Tide champions ———
-  brookSprite: {
-    name: 'Brook Sprite', house: 'tide', kind: 'champion', cost: 1, atk: 1, hp: 2,
-    motif: 'drop', text: 'It giggles in a language of rain.',
-  },
-  mistArcher: {
-    name: 'Mist Archer', house: 'tide', kind: 'champion', cost: 2, atk: 2, hp: 3,
-    motif: 'bow', text: 'You hear the bowstring a moment too late.',
-  },
-  reefTurtle: {
-    name: 'Reef Turtle', house: 'tide', kind: 'champion', cost: 3, atk: 2, hp: 6,
-    keyword: 'guard', motif: 'shell', text: 'Guard. Older than the harbour, twice as patient.',
-  },
-  stormLeviathan: {
-    name: 'Storm Leviathan', house: 'tide', kind: 'champion', cost: 7, atk: 7, hp: 7,
-    motif: 'wave', text: 'When it surfaces, the tide apologises.',
-  },
-  // ——— Thorn champions ———
-  seedling: {
-    name: 'Seedling', house: 'thorn', kind: 'champion', cost: 1, atk: 1, hp: 3,
-    keyword: 'thorns', motif: 'sprout', text: 'Thorns. Harmless, until you grab it.',
-  },
-  brambleWolf: {
-    name: 'Bramble Wolf', house: 'thorn', kind: 'champion', cost: 3, atk: 4, hp: 3,
-    motif: 'fang', text: 'The thicket hunts in winter.',
-  },
-  elderTreant: {
-    name: 'Elder Treant', house: 'thorn', kind: 'champion', cost: 5, atk: 4, hp: 8,
-    keyword: 'guard', motif: 'root', text: 'Guard, Thorns. It was here before the road.',
-    keyword2: 'thorns',
-  },
-  thornMatriarch: {
-    name: 'Thorn Matriarch', house: 'thorn', kind: 'champion', cost: 6, atk: 5, hp: 6,
-    keyword: 'thorns', motif: 'bloom', text: 'Thorns. Every rose in the valley answers to her.',
-  },
-  // ——— Gale champions ———
-  zephyrFox: {
-    name: 'Zephyr Fox', house: 'gale', kind: 'champion', cost: 1, atk: 2, hp: 2,
-    keyword: 'swift', motif: 'swirl', text: 'Swift. Gone before the dust settles.',
-  },
-  cloudDjinn: {
-    name: 'Cloud Djinn', house: 'gale', kind: 'champion', cost: 3, atk: 3, hp: 4,
-    motif: 'orb', text: 'It grants wishes. Mostly its own.',
-  },
-  skyRoc: {
-    name: 'Sky Roc', house: 'gale', kind: 'champion', cost: 5, atk: 5, hp: 4,
-    keyword: 'swift', motif: 'wing', text: 'Swift. Its shadow is a weather warning.',
-  },
-  tempestSphinx: {
-    name: 'Tempest Sphinx', house: 'gale', kind: 'champion', cost: 6, atk: 4, hp: 6,
-    keyword: 'drain', motif: 'eye', text: 'Drain. Her riddles drink the listener dry.',
-  },
-  // ——— Tricks ———
-  sparkBolt: {
-    name: 'Spark Bolt', house: 'ember', kind: 'trick', cost: 1,
+  flameLance: {
+    name: 'Flame Lance', house: 'ember', kind: 'trick', cost: 1,
     motif: 'bolt', effect: { type: 'damage', amount: 2 }, kindleBonus: 1,
-    text: 'Deal 2 damage to any target. Kindled: 3 instead.',
+    text: 'Deal 2 damage to anything. Kindled: 3 instead.',
   },
-  wildfire: {
-    name: 'Wildfire', house: 'ember', kind: 'trick', cost: 5,
+  conflagration: {
+    name: 'Conflagration', house: 'ember', kind: 'trick', cost: 5,
     motif: 'flame', effect: { type: 'damageAllEnemyChampions', amount: 3 }, kindleBonus: 1,
-    text: 'Deal 3 damage to ALL enemy champions. Kindled: 4 instead.',
+    text: 'Deal 3 damage to every enemy champion. Kindled: 4 instead.',
   },
-  healingRain: {
-    name: 'Healing Rain', house: 'tide', kind: 'trick', cost: 2,
+  // ——— Tide: patient water, sudden depths ———
+  brookNymph: {
+    name: 'Brook Nymph', house: 'tide', kind: 'champion', cost: 1, atk: 1, hp: 3,
+    motif: 'drop', text: 'She counts the rain and keeps the change.',
+  },
+  mistRanger: {
+    name: 'Mist Ranger', house: 'tide', kind: 'champion', cost: 2, atk: 2, hp: 3,
+    motif: 'bow', text: 'The arrow arrives before the fog does.',
+  },
+  coralBulwark: {
+    name: 'Coral Bulwark', house: 'tide', kind: 'champion', cost: 3, atk: 2, hp: 5,
+    keyword: 'guard', motif: 'shell', text: 'Guard. A reef that decided to stand up.',
+  },
+  abyssalLeviathan: {
+    name: 'Abyssal Leviathan', house: 'tide', kind: 'champion', cost: 7, atk: 7, hp: 7,
+    motif: 'wave', text: 'Sailors pray to it by not naming it.',
+  },
+  mendingRain: {
+    name: 'Mending Rain', house: 'tide', kind: 'trick', cost: 2,
     motif: 'drop', effect: { type: 'healDraw', amount: 5, draw: 1 }, kindleBonus: 2,
-    text: 'Restore 5 Heart and draw a card. Kindled: restore 7 instead.',
+    text: 'Mend 5 Heart and draw a card. Kindled: mend 7 instead.',
   },
-  frostbite: {
-    name: 'Frostbite', house: 'tide', kind: 'trick', cost: 3,
-    motif: 'shard', effect: { type: 'freezeDamage', amount: 3 }, kindleBonus: 1,
-    text: 'Deal 3 damage to a champion and Freeze it. Kindled: 4 instead.',
+  riptide: {
+    name: 'Riptide', house: 'tide', kind: 'trick', cost: 3,
+    motif: 'wave', effect: { type: 'bounce' }, kindleBonus: 0,
+    text: 'Sweep an enemy champion back into its keeper’s hand.',
+  },
+  // ——— Thorn: the green that pushes back ———
+  sproutling: {
+    name: 'Sproutling', house: 'thorn', kind: 'champion', cost: 1, atk: 1, hp: 2,
+    keyword: 'thorns', motif: 'sprout', text: 'Thorns. Pet it and learn.',
+  },
+  briarWolf: {
+    name: 'Briar Wolf', house: 'thorn', kind: 'champion', cost: 3, atk: 4, hp: 3,
+    motif: 'fang', text: 'The hedge has teeth after dark.',
+  },
+  ancientTreant: {
+    name: 'Ancient Treant', house: 'thorn', kind: 'champion', cost: 5, atk: 4, hp: 8,
+    keyword: 'guard', keyword2: 'thorns', motif: 'root',
+    text: 'Guard, Thorns. It remembers when this was all forest.',
+  },
+  thornQueen: {
+    name: 'Thorn Queen', house: 'thorn', kind: 'champion', cost: 6, atk: 5, hp: 6,
+    keyword: 'thorns', motif: 'bloom', text: 'Thorns. Every bramble in the vale kneels to her.',
   },
   overgrowth: {
     name: 'Overgrowth', house: 'thorn', kind: 'trick', cost: 2,
     motif: 'bloom', effect: { type: 'buff', atk: 2, hp: 2 }, kindleBonus: 1,
-    text: 'Give a friendly champion +2/+2. Kindled: +3/+3 instead.',
+    text: 'A friendly champion grows +2/+2. Kindled: +3/+3 instead.',
   },
-  secondWind: {
-    name: 'Second Wind', house: 'gale', kind: 'trick', cost: 1,
-    motif: 'swirl', effect: { type: 'draw', amount: 2 }, kindleBonus: 1,
-    text: 'Draw 2 cards. Kindled: draw 3 instead.',
+  tanglingVines: {
+    name: 'Tangling Vines', house: 'thorn', kind: 'trick', cost: 2,
+    motif: 'root', effect: { type: 'rootDamage', amount: 2 }, kindleBonus: 1,
+    text: 'Deal 2 damage to an enemy champion and Root it. Kindled: 3 instead.',
   },
-  gust: {
-    name: 'Gust', house: 'gale', kind: 'trick', cost: 2,
-    motif: 'wave', effect: { type: 'bounce' }, kindleBonus: 0,
-    text: 'Return an enemy champion to its owner’s hand.',
+  // ——— Gloom: what the dark lends, it collects ———
+  gloomWisp: {
+    name: 'Gloom Wisp', house: 'gloom', kind: 'champion', cost: 1, atk: 1, hp: 2,
+    motif: 'orb', text: 'A lantern with no one carrying it.',
+  },
+  nightStalker: {
+    name: 'Night Stalker', house: 'gloom', kind: 'champion', cost: 3, atk: 3, hp: 3,
+    keyword: 'drain', motif: 'eye', text: 'Drain. It drinks the warmth out of a room.',
+  },
+  cryptHorror: {
+    name: 'Crypt Horror', house: 'gloom', kind: 'champion', cost: 4, atk: 5, hp: 4,
+    motif: 'fang', text: 'The tomb was locked from the inside.',
+  },
+  dreadSphinx: {
+    name: 'Dread Sphinx', house: 'gloom', kind: 'champion', cost: 6, atk: 4, hp: 6,
+    keyword: 'drain', motif: 'eye', text: 'Drain. Answer her riddle or feed it.',
+  },
+  soulSap: {
+    name: 'Soul Sap', house: 'gloom', kind: 'trick', cost: 2,
+    motif: 'orb', effect: { type: 'sap', amount: 2 }, kindleBonus: 1,
+    text: 'Deal 2 damage to the enemy Heart and mend yours by 2. Kindled: 3 and 3.',
   },
 };
 
-// The 35-card deck both duelists bring. Cheap cards come in pairs so the
-// early game always has plays; the big finishers are single, precious copies.
+// The 32-card deck both duelists carry. Small cards come in pairs so the
+// opening turns always have a play; the great beasts and the wildfire
+// are single, precious copies.
 export const DECKLIST = [
-  'cinderImp', 'cinderImp', 'brookSprite', 'brookSprite',
-  'seedling', 'seedling', 'zephyrFox', 'zephyrFox',
-  'ashHound', 'ashHound', 'mistArcher', 'mistArcher',
-  'sparkBolt', 'sparkBolt', 'secondWind',
-  'reefTurtle', 'reefTurtle', 'brambleWolf', 'brambleWolf',
-  'cloudDjinn', 'cloudDjinn', 'overgrowth', 'overgrowth', 'frostbite',
-  'forgeGolem', 'forgeGolem', 'healingRain', 'gust',
-  'elderTreant', 'skyRoc', 'wildfire',
-  'pyreDrake', 'thornMatriarch', 'tempestSphinx', 'stormLeviathan',
+  'emberSprite', 'emberSprite', 'brookNymph', 'brookNymph',
+  'sproutling', 'sproutling', 'gloomWisp', 'gloomWisp',
+  'cinderHound', 'cinderHound', 'mistRanger', 'mistRanger',
+  'flameLance', 'flameLance', 'nightStalker', 'nightStalker',
+  'coralBulwark', 'briarWolf', 'cryptHorror',
+  'overgrowth', 'tanglingVines', 'riptide', 'mendingRain', 'soulSap',
+  'forgeSentinel', 'forgeSentinel', 'ancientTreant', 'conflagration',
+  'infernoDrake', 'thornQueen', 'dreadSphinx', 'abyssalLeviathan',
 ];
 
-export const KEYWORD_TEXT = {
-  swift: 'Swift — can attack the turn it is played.',
-  guard: 'Guard — enemies must attack this champion first.',
+export const KEYWORD_HELP = {
+  swift: 'Swift — may attack the turn it is played.',
+  guard: 'Guard — enemies must attack this champion before other targets.',
   thorns: 'Thorns — attackers take 1 damage back.',
-  drain: 'Drain — damage it deals also heals your Heart.',
+  drain: 'Drain — damage it deals also mends its keeper’s Heart.',
 };
