@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emberfall Duel — an original card game</title>
+<link rel="stylesheet" href="css/table.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ————— Title screen ————— -->
+  <section id="title-screen">
+    <div class="crest" aria-hidden="true">
+      <span style="--c:#f06423">▲</span><span style="--c:#2f8fe8">●</span><span style="--c:#43b04c">✚</span><span style="--c:#a55eea">◆</span>
+    </div>
+    <h1>EMBERFALL<br>DUEL</h1>
+    <p class="tagline">A card duel of four Houses against Briar, the Thicket Warden.</p>
+    <div class="howto">
+      <h2>How to play</h2>
+      <ul>
+        <li><b>Hearts:</b> you and Briar start on <b>♥ 20</b>. Reduce hers to 0 to win — protect yours.</li>
+        <li><b>Energy ◆</b> grows by 1 each of your turns (max 8) and pays for every card.</li>
+        <li><b>Champions</b> stay on the table and attack from next turn (unless <b>Swift</b>). <b>Guard</b> champions must be attacked first.</li>
+        <li><b>Kindle 🔥:</b> play a card while a champion of its House is already on your table and it enters stronger — champions +1/+1, Tricks boosted.</li>
+        <li>Click a card to play it, click one of your ready champions, then click its target. <b>END TURN</b> hands over to Briar.</li>
+      </ul>
+    </div>
+    <button id="start-btn" class="big-btn">⚔ &nbsp;START THE DUEL</button>
+    <p class="credit">An original game — its cards, houses and art were made for this table.</p>
+  </section>
+
+  <!-- ————— The table ————— -->
+  <section id="table-screen" hidden>
+    <div id="rival-bar" class="bar"></div>
+    <div id="rival-hand" class="hand-row backs"></div>
+    <div id="rival-board" class="board-row rival"></div>
+    <div id="middle-strip">
+      <div id="turn-banner" class="turn-banner">Your turn</div>
+      <div id="log" class="log"></div>
+    </div>
+    <div id="player-board" class="board-row player"></div>
+    <div id="player-hand" class="hand-row"></div>
+    <div id="player-bar" class="bar">
+      <div id="player-info"></div>
+      <button id="end-turn-btn" class="big-btn small">END TURN ▸</button>
+    </div>
+    <div id="fx-layer"></div>
+  </section>
+
+  <!-- ————— Win / loss screen ————— -->
+  <section id="end-screen" hidden>
+    <div id="end-rays" aria-hidden="true"></div>
+    <div id="end-panel">
+      <div id="end-crest" aria-hidden="true">▲ ● ✚ ◆</div>
+      <h1 id="end-title">VICTORY</h1>
+      <p id="end-text"></p>
+      <p id="end-stats"></p>
+      <button id="again-btn" class="big-btn">↻ &nbsp;PLAY AGAIN</button>
+    </div>
+  </section>
+
+</div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
